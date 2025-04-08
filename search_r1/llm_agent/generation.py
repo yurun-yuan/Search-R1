@@ -9,6 +9,7 @@ from verl import DataProto
 from verl.utils.tracking import Tracking
 import shutil
 import requests
+import requests_unixsocket
 
 @dataclass
 class GenerationConfig:
@@ -41,6 +42,8 @@ class LLMGenerationManager:
             max_obs_length=config.max_obs_length,
             max_start_length=config.max_start_length
         ))
+
+        self.session = requests_unixsocket.Session()
 
     def _batch_tokenize(self, responses: List[str]) -> torch.Tensor:
         """Tokenize a batch of responses."""
@@ -455,7 +458,7 @@ If I want to give the final answer, I should put the answer between <answer> and
             "return_scores": True
         }
         
-        return requests.post(self.config.search_url, json=payload).json()
+        return self.session.post(self.config.search_url, json=payload).json()
 
     def _passages2string(self, retrieval_result):
         format_reference = ''
