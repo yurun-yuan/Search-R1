@@ -393,10 +393,13 @@ if __name__ == "__main__":
     )
 
     # 2) Instantiate a global retriever so it is loaded once and reused.
+    print("Loading retriever...")
     retriever = get_retriever(config)
+    print("Retriever loaded.")
     
     socket_path = "/tmp/searchr1.sock"
     if os.path.exists(socket_path):
         os.remove(socket_path)
 
+    print("Starting FastAPI server...")
     uvicorn.run(app, uds=socket_path)
