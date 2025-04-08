@@ -357,6 +357,13 @@ def retrieve_endpoint(request: QueryRequest):
             resp.append(single_result)
     return {"result": resp}
 
+@app.get("/debug")
+def debug_endpoint():
+    """
+    Debug endpoint to check if the server is running.
+    """
+    print("Debug endpoint hit!")
+    return {"status": "ok", "message": "Retriever server is running."}
 
 if __name__ == "__main__":
     
