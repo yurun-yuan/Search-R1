@@ -725,10 +725,11 @@ class RayPPOTrainer(object):
                         first_input_ids = gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone().long()
 
                         with _timer('gen', timing_raw):
-                            final_gen_batch_output = generation_manager.run_llm_loop(
+                            final_gen_batch_output, run_llm_loop_metrics = generation_manager.run_llm_loop(
                                 gen_batch=gen_batch,
                                 initial_input_ids=first_input_ids,
                             )
+                            timing_raw.update(run_llm_loop_metrics)
 
                         # final_gen_batch_output.batch.apply(lambda x: x.long(), inplace=True)
                         for key in final_gen_batch_output.batch.keys():

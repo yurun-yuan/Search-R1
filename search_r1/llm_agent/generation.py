@@ -8,8 +8,22 @@ from .tensor_helper import TensorHelper, TensorConfig
 from verl import DataProto
 from verl.utils.tracking import Tracking
 import shutil
+from codetiming import Timer
 import requests
 import requests_unixsocket
+from contextlib import contextmanager
+
+@contextmanager
+def _timer(name: str, timing_raw: Dict[str, float]):
+    with Timer(name=name, logger=None) as timer:
+        yield
+    timing_raw[name] = timer.last
+
+@contextmanager
+def _cumu_timer(name: str, timing_raw: Dict[str, float]):
+    with Timer(name=name, logger=None) as timer:
+        yield
+    timing_raw[name] += timer.last
 
 @dataclass
 class GenerationConfig:
@@ -233,6 +247,8 @@ class LLMGenerationManager:
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
 
+        timing_metrics = {"inference": 0.0, "retrieve": 0.0}
+
         # Main generation loop
         for step in range(self.config.max_turns):
             if not active_mask.sum():
@@ -245,17 +261,20 @@ class LLMGenerationManager:
             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
             rollings_active = DataProto.from_dict({
                 k: v[active_mask] for k, v in rollings.batch.items()
-            })            
-            gen_output = self._generate_with_gpu_padding(rollings_active)
+            })
+
+            with _cumu_timer('inference', timing_metrics):
+                gen_output = self._generate_with_gpu_padding(rollings_active)
 
             meta_info = gen_output.meta_info            
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # Execute in environment and process observations
-            next_obs, dones, valid_action, is_search = self.execute_predictions(
+            next_obs, dones, valid_action, is_search, execute_predictions_metrics = self.execute_predictions(
                 responses_str, self.tokenizer.pad_token, active_mask
             )
+            timing_metrics['retrieve'] += execute_predictions_metrics['retrieve']
             
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
@@ -288,17 +307,20 @@ class LLMGenerationManager:
             # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
             rollings_active = DataProto.from_dict({
                 k: v[active_mask] for k, v in rollings.batch.items()
-            })            
-            gen_output = self._generate_with_gpu_padding(rollings_active)
+            })
+            
+            with _cumu_timer('inference', timing_metrics):
+                gen_output = self._generate_with_gpu_padding(rollings_active)
 
             meta_info = gen_output.meta_info            
             responses_ids, responses_str = self._postprocess_responses(gen_output.batch['responses'])
             responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
 
             # # Execute in environment and process observations
-            _, dones, valid_action, is_search = self.execute_predictions(
+            _, dones, valid_action, is_search, execute_predictions_metrics = self.execute_predictions(
                 responses_str, self.tokenizer.pad_token, active_mask, do_search=False
             )
+            timing_metrics['retrieve'] += execute_predictions_metrics['retrieve']
 
             curr_active_mask = torch.tensor([not done for done in dones], dtype=torch.bool)
             active_mask = active_mask * curr_active_mask
@@ -319,7 +341,7 @@ class LLMGenerationManager:
         
         print("ACTIVE_TRAJ_NUM:", active_num_list)
         
-        return self._compose_final_output(original_left_side, original_right_side, meta_info)
+        return self._compose_final_output(original_left_side, original_right_side, meta_info), timing_metrics
 
     def _compose_final_output(self, left_side: Dict,
                             right_side: Dict,
@@ -369,10 +391,12 @@ class LLMGenerationManager:
         """
         cur_actions, contents = self.postprocess_predictions(predictions)
         next_obs, dones, valid_action, is_search = [], [], [], []
+        timing_metrics = {"retrieve": 0.0}
         
         search_queries = [content for action, content in zip(cur_actions, contents) if action == 'search']
         if do_search:
-            search_results = self.batch_search(search_queries)
+            with _timer('retrieve', timing_metrics):
+                search_results = self.batch_search(search_queries)
             assert len(search_results) == sum([1 for action in cur_actions if action == 'search'])
         else:
             search_results = [''] * sum([1 for action in cur_actions if action == 'search'])
@@ -405,7 +429,7 @@ If I want to give the final answer, I should put the answer between <answer> and
             
         assert len(search_results) == 0
             
-        return next_obs, dones, valid_action, is_search
+        return next_obs, dones, valid_action, is_search, timing_metrics
 
     def postprocess_predictions(self, predictions: List[Any]) -> Tuple[List[int], List[bool]]:
         """
